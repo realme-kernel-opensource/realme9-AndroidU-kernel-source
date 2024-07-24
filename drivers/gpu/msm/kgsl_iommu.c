@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2011-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/compat.h>
@@ -1045,6 +1046,7 @@ static void setup_64bit_pagetable(struct kgsl_mmu *mmu,
 		pt->compat_va_end = KGSL_IOMMU_SECURE_BASE(mmu);
 		pt->va_start = KGSL_IOMMU_VA_BASE64;
 		pt->va_end = KGSL_IOMMU_VA_END64;
+
 	}
 
 	if (pagetable->name != KGSL_MMU_GLOBAL_PT &&
@@ -2427,14 +2429,18 @@ static uint64_t kgsl_iommu_find_svm_region(struct kgsl_pagetable *pagetable,
 static bool iommu_addr_in_svm_ranges(struct kgsl_iommu_pt *pt,
 	u64 gpuaddr, u64 size)
 {
+	u64 end = gpuaddr + size;
+
+	/* Make sure size is not zero and we don't wrap around */
+	if (end <= gpuaddr)
+		return false;
+
 	if ((gpuaddr >= pt->compat_va_start && gpuaddr < pt->compat_va_end) &&
-		((gpuaddr + size) > pt->compat_va_start &&
-			(gpuaddr + size) <= pt->compat_va_end))
+		(end > pt->compat_va_start && end <= pt->compat_va_end))
 		return true;
 
 	if ((gpuaddr >= pt->svm_start && gpuaddr < pt->svm_end) &&
-		((gpuaddr + size) > pt->svm_start &&
-			(gpuaddr + size) <= pt->svm_end))
+		(end > pt->svm_start && end <= pt->svm_end))
 		return true;
 
 	return false;
@@ -2578,20 +2584,21 @@ static int kgsl_iommu_svm_range(struct kgsl_pagetable *pagetable,
 }
 
 static bool kgsl_iommu_addr_in_range(struct kgsl_pagetable *pagetable,
-		uint64_t gpuaddr)
+		uint64_t gpuaddr, uint64_t size)
 {
 	struct kgsl_iommu_pt *pt = pagetable->priv;
 
 	if (gpuaddr == 0)
 		return false;
 
-	if (gpuaddr >= pt->va_start && gpuaddr < pt->va_end)
+	if (gpuaddr >= pt->va_start && (gpuaddr + size) < pt->va_end)
 		return true;
 
-	if (gpuaddr >= pt->compat_va_start && gpuaddr < pt->compat_va_end)
+	if (gpuaddr >= pt->compat_va_start &&
+			(gpuaddr + size) < pt->compat_va_end)
 		return true;
 
-	if (gpuaddr >= pt->svm_start && gpuaddr < pt->svm_end)
+	if (gpuaddr >= pt->svm_start && (gpuaddr + size) < pt->svm_end)
 		return true;
 
 	return false;
@@ -2656,6 +2663,23 @@ static int _kgsl_iommu_cb_probe(struct kgsl_device *device,
 	}
 
 	of_dma_configure(ctx->dev, node, true);
+
+	if (ctx->id == KGSL_IOMMU_CONTEXT_USER) {
+		/*
+		 * It is problematic if smmu driver does system suspend before
+		 * consumer device (gpu). So smmu driver creates a device_link
+		 * to act as a supplier which in turn will ensure correct order
+		 * during system suspend. In kgsl, since we don't initialize
+		 * iommu on the gpu device, we should create a device_link
+		 * between kgsl iommu device and gpu device to maintain a
+		 * correct suspend order between smmu device and gpu device.
+		 */
+		if (!device_link_add(&device->pdev->dev, ctx->dev,
+				DL_FLAG_AUTOREMOVE_CONSUMER))
+			dev_err(ctx->dev,
+				"Unable to create device link to gpu device\n");
+	}
+
 	return 0;
 }
 

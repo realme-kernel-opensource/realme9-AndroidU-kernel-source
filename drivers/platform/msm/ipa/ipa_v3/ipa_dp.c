@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -1294,13 +1295,19 @@ int ipa3_setup_sys_pipe(struct ipa_sys_connect_params *sys_in, u32 *clnt_hdl)
 fail_gen3:
 	ipa3_disable_data_path(ipa_ep_idx);
 fail_repl:
-	ep->sys->repl_hdlr = ipa3_replenish_rx_cache;
-	ep->sys->repl->capacity = 0;
-	kfree(ep->sys->repl);
+	if (IPA_CLIENT_IS_CONS(ep->client))
+		ipa3_cleanup_rx(ep->sys);
+
+	if(ep->sys->repl) {
+		ep->sys->repl->capacity = 0;
+		kfree(ep->sys->repl);
+		ep->sys->repl = NULL;
+	}
 fail_page_recycle_repl:
 	if (ep->sys->page_recycle_repl) {
 		ep->sys->page_recycle_repl->capacity = 0;
 		kfree(ep->sys->page_recycle_repl);
+		ep->sys->page_recycle_repl = NULL;
 	}
 fail_gen2:
 	ipa_pm_deregister(ep->sys->pm_hdl);
@@ -2446,7 +2453,7 @@ static void ipa3_replenish_rx_cache_recycle(struct ipa3_sys_context *sys)
 			spin_lock_bh(&sys->spinlock);
 			rx_pkt = list_first_entry(&sys->rcycl_list,
 				struct ipa3_rx_pkt_wrapper, link);
-			list_del(&rx_pkt->link);
+			list_del_init(&rx_pkt->link);
 			spin_unlock_bh(&sys->spinlock);
 			ptr = skb_put(rx_pkt->data.skb, sys->rx_buff_sz);
 			rx_pkt->data.dma_addr = dma_map_single(ipa3_ctx->pdev,
@@ -2487,8 +2494,8 @@ static void ipa3_replenish_rx_cache_recycle(struct ipa3_sys_context *sys)
 	goto done;
 fail_dma_mapping:
 	spin_lock_bh(&sys->spinlock);
+	ipa3_skb_recycle(rx_pkt->data.skb);
 	list_add_tail(&rx_pkt->link, &sys->rcycl_list);
-	INIT_LIST_HEAD(&rx_pkt->link);
 	spin_unlock_bh(&sys->spinlock);
 fail_kmem_cache_alloc:
 	if (rx_len_cached == 0)
@@ -2703,6 +2710,7 @@ static void ipa3_cleanup_rx(struct ipa3_sys_context *sys)
 
 		kfree(sys->repl->cache);
 		kfree(sys->repl);
+		sys->repl = NULL;
 	}
 	if (sys->page_recycle_repl) {
 		for (i = 0; i < sys->page_recycle_repl->capacity; i++) {
@@ -2721,6 +2729,7 @@ static void ipa3_cleanup_rx(struct ipa3_sys_context *sys)
 		}
 		kfree(sys->page_recycle_repl->cache);
 		kfree(sys->page_recycle_repl);
+		sys->page_recycle_repl = NULL;
 	}
 }
 
